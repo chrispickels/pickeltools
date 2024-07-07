@@ -239,8 +239,9 @@ void PickelTools::exitGame(ServerWrapper server, void* params, std::string event
 	gameWrapper->SetTimeout(std::bind(&PickelTools::delayedExit, this), totalExitDelayTime);
 }
 
-void PickelTools::queue(ServerWrapper server, void* params, std::string eventName)
-{
+void PickelTools::queue(ServerWrapper server, void* params, std::string eventName) {
+	LOG("queue()");
+
 	float totalQueueDelayTime = 0;
 	float queueDelayTime = cvarManager->getCvar(qDelayCvarName).getFloatValue();
 	float autoGGDelayTime = cvarManager->getCvar("ranked_autogg_delay").getFloatValue() / 1000;
@@ -255,8 +256,7 @@ void PickelTools::queue(ServerWrapper server, void* params, std::string eventNam
 	bool disableCasualQueue = cvarManager->getCvar(disableCasualQCvarName).getBoolValue();
 	bool disablePrivate = cvarManager->getCvar(disablePrivateCvarName).getBoolValue();
 
-	if (!server.IsNull() && (disablePrivate || disableCasualQueue))
-	{
+	if (!server.IsNull() && (disablePrivate || disableCasualQueue))	{
 		auto playlist = (Mode)server.GetPlaylist().GetPlaylistId();
 
 		if ((playlist == CasualChaos || playlist == CasualDoubles || playlist == CasualDuel || playlist == CasualStandard) && disableCasualQueue) {
@@ -273,11 +273,8 @@ void PickelTools::queue(ServerWrapper server, void* params, std::string eventNam
 
 void PickelTools::delayedQueue() {
 	auto game = gameWrapper->GetOnlineGame();
-
 	if (!game.IsNull()) {
-		if (!game.GetbMatchEnded()) {
-			return;
-		}
+		if (game.GetbHasLeaveMatchPenalty()) return;
 	}
 
 	cvarManager->executeCommand("queue");
@@ -294,11 +291,8 @@ void PickelTools::delayedTraining() {
 	launchTrainingCommandBuilder << "start " << mapname << "?Game=TAGame.GameInfo_Tutorial_TA?GameTags=Freeplay";
 	const std::string launchTrainingCommand = launchTrainingCommandBuilder.str();
 	auto game = gameWrapper->GetOnlineGame();
-
 	if (!game.IsNull()) {
-		if (!game.GetbMatchEnded()) {
-			return;
-		}
+		if (game.GetbHasLeaveMatchPenalty()) return;
 	}
 
 	gameWrapper->ExecuteUnrealCommand(launchTrainingCommand);
@@ -308,15 +302,21 @@ void PickelTools::delayedExit() {
 	auto game = gameWrapper->GetOnlineGame();
 
 	if (!game.IsNull()) {
-		if (!game.GetbMatchEnded()) {
-			return;
-		}
+		if (game.GetbHasLeaveMatchPenalty()) return;
 	}
 
 	cvarManager->executeCommand("unreal_command disconnect");
 }
 
 void PickelTools::onMatchEnd(ServerWrapper server, void* params, std::string eventName) {
+	const std::string matchGuid = server.GetMatchGUID();
+	LOG("onMatchEnd for match={}", matchGuid);
+	if (lastMatchGuid == matchGuid) {
+		LOG("Already received onMatchEnd for match={}, ignoring...", matchGuid);
+		return;
+	}
+	lastMatchGuid = matchGuid;
+
 	if (gamesRemaining == 0) {
 		LOG("No active session");
 		return;
@@ -434,6 +434,14 @@ void PickelTools::startSession() {
 	}
 	LOG("Start matchmaking...");
 	mm.StartMatchmaking(PlaylistCategory::RANKED);
+
+	if (!gameWrapper->IsInFreeplay() &&
+			!gameWrapper->IsInReplay() &&
+			!gameWrapper->IsInCustomTraining()) {
+		delayedTraining();
+	}
+
+	cvarManager->executeCommand("closemenu settings");
 }
 
 void PickelTools::endSession() {

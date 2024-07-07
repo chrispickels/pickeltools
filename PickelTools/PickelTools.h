@@ -84,6 +84,7 @@ private:
 
 	std::optional<Ranks> ranks;
 	
+	std::string lastMatchGuid;
 	UniqueIDWrapper	uniqueId;
 	bool hooked = false;
 	std::map<int, float> playerMmr;
