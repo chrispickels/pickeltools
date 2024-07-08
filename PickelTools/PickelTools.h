@@ -82,16 +82,16 @@ private:
 	void endSession();
 	Ranks buildNewRanks();
 
+	Ranks startSessionRanks;
 	std::optional<Ranks> ranks;
 	
 	std::string lastMatchGuid;
 	UniqueIDWrapper	uniqueId;
 	bool hooked = false;
-	std::map<int, float> playerMmr;
-	uintptr_t imguiCtx;
 	int gamesRemaining = 0;
 	int gamesPlayed = 0;
 	Mode gameMode;
+	bool awaitingFinalMmrUpdate = false;
 	
 	std::unique_ptr<MMRNotifierToken> mmrNotifierToken;
 };

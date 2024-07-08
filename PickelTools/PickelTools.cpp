@@ -19,10 +19,16 @@ void LOG(std::string_view format_str, Args&&... args)
 	_globalCvarManager->log(std::vformat(format_str, std::make_format_args(std::forward<Args>(args)...)));
 }
 
+bool isNearlyEqual(float a, float b) {
+  constexpr int kFactor = 2;
+  const float min_a = a - (a - std::nextafter(a, std::numeric_limits<float>::lowest())) * kFactor;
+  const float max_a = a + (std::nextafter(a, std::numeric_limits<float>::max()) - a) * kFactor;
+  return min_a <= b && max_a >= b;
+}
+
 }  // namespace
 
-void PickelTools::onLoad()
-{
+void PickelTools::onLoad() {
 	_globalCvarManager = cvarManager;
 
 	cvarManager->registerCvar(enabledCvarName, "1", "Determines whether PickelTools is enabled.").addOnValueChanged(std::bind(&PickelTools::pluginEnabledChanged, this));
@@ -45,6 +51,9 @@ void PickelTools::onLoad()
 	uniqueId = gameWrapper->GetUniqueID();
 	LOG("Player's UniqueID is {}", uniqueId.GetIdString());
 
+	ranks.emplace(buildNewRanks());
+	LOG("Ranks initialized: {}", ranksToString(*ranks));
+
 	mmrNotifierToken = gameWrapper->GetMMRWrapper().RegisterMMRNotifier(
 			[this](UniqueIDWrapper id) {
 				onMmrUpdate(id);
@@ -53,8 +62,10 @@ void PickelTools::onLoad()
 	pluginEnabledChanged();
 }
 
-void PickelTools::onUnload()
-{
+void PickelTools::onUnload() {
+	mmrNotifierToken.reset();
+	ranks.reset();
+	awaitingFinalMmrUpdate = false;
 }
 
 void PickelTools::RenderSettings() {
@@ -333,21 +344,19 @@ void PickelTools::onMatchEnd(ServerWrapper server, void* params, std::string eve
 	const bool exitEnabled = cvarManager->getCvar(exitCvarName).getBoolValue();
 	const bool queueEnabled = cvarManager->getCvar(queueCvarName).getBoolValue();
 	const bool trainingEnabled = cvarManager->getCvar(trainingCvarName).getBoolValue();
-	if (queueEnabled) {
-		queue(server, params, eventName);
-	}
 	if (exitEnabled) {
 		exitGame(server, params, eventName);
-	}
-	else {
+	}	else {
 		if (trainingEnabled) {
 			launchTraining(server, params, eventName);
 		}
 	}
+	if (queueEnabled) {
+		queue(server, params, eventName);
+	}
 }
 
-void PickelTools::onPenaltyChanged(ServerWrapper server, void* params, std::string eventName)
-{
+void PickelTools::onPenaltyChanged(ServerWrapper server, void* params, std::string eventName) {
 	if (server.GetbHasLeaveMatchPenalty()) return;
 
 	// Match leave penalty has been lifted. Either:
@@ -361,7 +370,7 @@ void PickelTools::onPenaltyChanged(ServerWrapper server, void* params, std::stri
 	const bool bForfeit = server.GetbForfeit();
 	LOG("Forfeit={}", bForfeit);
 	if (bForfeit) {
-		LOG("Game is forfeit, leaving");
+		LOG("Game is forfeit, ready to leave");
 		onMatchEnd(server, params, eventName);
 		return;
 	}
@@ -376,7 +385,7 @@ void PickelTools::onPenaltyChanged(ServerWrapper server, void* params, std::stri
 		LOG("Score is {} to {}", teams.Get(0).GetScore(), teams.Get(1).GetScore());
 		if (teams.Get(0).GetScore() == teams.Get(1).GetScore()) return;
 		
-		LOG("Overtime looks done, leaving");
+		LOG("Overtime looks done, ready to leave");
 		onMatchEnd(server, params, eventName);
 		return;
 	}
@@ -387,7 +396,7 @@ void PickelTools::onPenaltyChanged(ServerWrapper server, void* params, std::stri
 	LOG("Score is {} to {}", teams.Get(0).GetScore(), teams.Get(1).GetScore());
 	if (teams.Get(0).GetScore() == teams.Get(1).GetScore()) return;
 	
-	LOG("Game looks done, leaving");
+	LOG("Game looks done, ready to leave");
 	onMatchEnd(server, params, eventName);
 }
 
@@ -414,6 +423,14 @@ void PickelTools::startSession() {
 	if (mm.IsNull()) {
 		gamesRemaining = 0;
 		return;
+	}
+
+	if (ranks.has_value()) {
+		LOG("Start session with ranks {}", ranksToString(*ranks));
+		startSessionRanks = *ranks;
+	} else {
+		LOG("Start session with unknown ranks");
+		startSessionRanks = {};
 	}
 
 	clearPlaylists(mm);
@@ -456,8 +473,7 @@ void PickelTools::endSession() {
 	gamesRemaining = 0;
 	if (gamesPlayed == 0) return;
 
-	std::string message;
-	gameWrapper->Toast("Session Complete", message, "", 10.0, ToastType_OK);
+	awaitingFinalMmrUpdate = true;
 }
 
 PickelTools::Ranks PickelTools::buildNewRanks() {
@@ -469,14 +485,39 @@ PickelTools::Ranks PickelTools::buildNewRanks() {
 }
 
 void PickelTools::onMmrUpdate(UniqueIDWrapper id) {
-	if (id != uniqueId) return;
+	if (id != uniqueId) {
+		LOG("Received MMR update for unrecognized player: {}", id.GetIdString());
+	}
 
 	Ranks newRanks = buildNewRanks();
-
 	if (!ranks.has_value()) {
 		LOG("Ranks initialized: {}", ranksToString(newRanks));
 		ranks.emplace(newRanks);
 		return;
+	}
+	
+	if (awaitingFinalMmrUpdate) {
+		LOG("Got final MMR update for session");
+		awaitingFinalMmrUpdate = false;
+
+		Ranks diff;
+		diff.rankedDuel = newRanks.rankedDuel - startSessionRanks.rankedDuel;
+		diff.rankedDoubles = newRanks.rankedDoubles - startSessionRanks.rankedDoubles;
+		diff.rankedStandard = newRanks.rankedStandard - startSessionRanks.rankedStandard;
+		startSessionRanks = {};
+
+		std::stringstream s;
+		s << "Completed " << gamesPlayed << " games";
+		if (!isNearlyEqual(diff.rankedDuel, 0.f)) {
+			s << std::format("\n1v1 {:+.1f}", diff.rankedDuel);
+		}
+		if (!isNearlyEqual(diff.rankedDoubles, 0.f)) {
+			s << std::format("\n2v2 {:+.1f}\n", diff.rankedDoubles);
+		}
+		if (!isNearlyEqual(diff.rankedStandard, 0.f)) {
+			s << std::format("\n3v3 {:+.1f}\n", diff.rankedStandard);
+		}
+		gameWrapper->Toast("Session Complete", s.str(), "", 10.0, ToastType_OK);
 	}
 
 	if (ranks->rankedDuel == newRanks.rankedDuel &&
@@ -489,15 +530,13 @@ void PickelTools::onMmrUpdate(UniqueIDWrapper id) {
 	ranks.emplace(newRanks);
 }
 
-void PickelTools::hookMatchEnded()
-{
+void PickelTools::hookMatchEnded() {
 	gameWrapper->HookEventWithCaller<ServerWrapper>(matchEndedEvent, std::bind(&PickelTools::onMatchEnd, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 	gameWrapper->HookEventWithCallerPost<ServerWrapper>(penaltyChangedEvent, std::bind(&PickelTools::onPenaltyChanged, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 	hooked = true;
 }
 
-void PickelTools::unhookMatchEnded()
-{
+void PickelTools::unhookMatchEnded() {
 	gameWrapper->UnhookEvent(matchEndedEvent);
 	gameWrapper->UnhookEventPost(penaltyChangedEvent);
 	hooked = false;
