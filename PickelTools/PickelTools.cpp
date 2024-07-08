@@ -231,7 +231,20 @@ void PickelTools::onMatchEnd(ServerWrapper server, void* params, std::string eve
 	}
 
 	startTraining();
-	queue();
+	if (server.GetbMatchEnded()) {
+		queue();
+		return;
+	}
+
+	// Sanity check.
+	if (server.GetbHasLeaveMatchPenalty()) {
+		LOG("bHasLeaveMatchPenalty still true, failed to queue");
+		return;
+	}
+
+	// Queueing now might not work. Let's wait until we have actually left the game.
+	LOG("Waiting for onSessionEnd before queueing...");
+	queueAfterEndSession = true;
 }
 
 void PickelTools::onPenaltyChanged(ServerWrapper server, void* params, std::string eventName) {
@@ -276,6 +289,15 @@ void PickelTools::onPenaltyChanged(ServerWrapper server, void* params, std::stri
 	
 	LOG("Game looks done, ready to leave");
 	onMatchEnd(server, params, eventName);
+}
+
+void PickelTools::onSessionEnded(ServerWrapper server, void* params, std::string eventName) {
+	LOG("onSessionEnded event={}", eventName);
+	if (queueAfterEndSession) {
+		LOG("queueing after onSessionEnded");
+		queueAfterEndSession = false;
+		queue();
+	}
 }
 
 void PickelTools::startSession() {
@@ -386,11 +408,13 @@ void PickelTools::onMmrUpdate(UniqueIDWrapper id) {
 void PickelTools::hookMatchEnded() {
 	gameWrapper->HookEventWithCaller<ServerWrapper>(matchEndedEvent, std::bind(&PickelTools::onMatchEnd, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 	gameWrapper->HookEventWithCallerPost<ServerWrapper>(penaltyChangedEvent, std::bind(&PickelTools::onPenaltyChanged, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
+	gameWrapper->HookEventWithCaller<ServerWrapper>(sessionEndedEvent, std::bind(&PickelTools::onSessionEnded, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 	hooked = true;
 }
 
 void PickelTools::unhookMatchEnded() {
-	gameWrapper->UnhookEvent(matchEndedEvent);
+	gameWrapper->UnhookEvent(sessionEndedEvent);
 	gameWrapper->UnhookEventPost(penaltyChangedEvent);
+	gameWrapper->UnhookEvent(matchEndedEvent);
 	hooked = false;
 }

@@ -42,6 +42,8 @@ private:
 
 	static constexpr const char* matchEndedEvent = "Function TAGame.GameEvent_Soccar_TA.EventMatchEnded";
 	static constexpr const char* penaltyChangedEvent = "Function TAGame.GameEvent_TA.EventPenaltyChanged";
+	static constexpr const char* sessionEndedEvent = "Function TAGame.PlayerController_TA.Destroyed";
+
 	static constexpr const char* enabledCvarName = "pickel_tools_enabled";
 	static constexpr const char* trainingMapCvarName = "instant_training_map";
 
@@ -61,6 +63,7 @@ private:
 	void unhookMatchEnded();
 	void onMatchEnd(ServerWrapper server, void* params, std::string eventName);
 	void onPenaltyChanged(ServerWrapper server, void* params, std::string eventName);
+	void onSessionEnded(ServerWrapper server, void* params, std::string eventName);
 	void onMmrUpdate(UniqueIDWrapper id);
 	void startSession();
 	void endSession();
@@ -76,6 +79,7 @@ private:
 	int gamesPlayed = 0;
 	Mode gameMode;
 	bool awaitingFinalMmrUpdate = false;
+	bool queueAfterEndSession = false;
 	
 	std::unique_ptr<MMRNotifierToken> mmrNotifierToken;
 };
