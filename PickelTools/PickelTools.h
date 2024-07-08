@@ -2,7 +2,6 @@
 
 #include <map>
 #include <memory>
-#include <optional>
 
 #include "bakkesmod/plugin/bakkesmodplugin.h"
 #include "bakkesmod/plugin/PluginSettingsWindow.h"
@@ -44,17 +43,7 @@ private:
 	static constexpr const char* matchEndedEvent = "Function TAGame.GameEvent_Soccar_TA.EventMatchEnded";
 	static constexpr const char* penaltyChangedEvent = "Function TAGame.GameEvent_TA.EventPenaltyChanged";
 	static constexpr const char* enabledCvarName = "pickel_tools_enabled";
-	static constexpr const char* trainingCvarName = "instant_training_enabled";
-	static constexpr const char* queueCvarName = "instant_queue_enabled";
-	static constexpr const char* exitCvarName = "instant_exit_enabled";
 	static constexpr const char* trainingMapCvarName = "instant_training_map";
-	static constexpr const char* tDelayCvarName = "instant_training_delay";
-	static constexpr const char* qDelayCvarName = "instant_queue_delay";
-	static constexpr const char* eDelayCvarName = "instant_exit_delay";
-	static constexpr const char* disableCasualQCvarName = "instant_queue_bypass_casual";
-	static constexpr const char* disableCasualTCvarName = "instant_training_bypass_casual";
-	static constexpr const char* disableCasualECvarName = "instant_exit_bypass_casual";
-	static constexpr const char* disablePrivateCvarName = "pickel_tools_private_disable";
 
 	struct Ranks {
 		float rankedDuel = 0.f;
@@ -66,24 +55,19 @@ private:
 	static const char* modeToString(Mode mode);
 
 	void pluginEnabledChanged();
-	void launchTraining(ServerWrapper caller, void* params, std::string eventName);
-	void queue(ServerWrapper caller, void* params, std::string eventName);
-	void exitGame(ServerWrapper caller, void* params, std::string eventName);
-	void delayedQueue();
-	void delayedTraining();
-	void delayedExit();
+	void queue();
+	void startTraining();
 	void hookMatchEnded();
 	void unhookMatchEnded();
 	void onMatchEnd(ServerWrapper server, void* params, std::string eventName);
 	void onPenaltyChanged(ServerWrapper server, void* params, std::string eventName);
 	void onMmrUpdate(UniqueIDWrapper id);
-	void clearPlaylists(MatchmakingWrapper& mm);
 	void startSession();
 	void endSession();
 	Ranks buildNewRanks();
 
-	Ranks startSessionRanks;
-	std::optional<Ranks> ranks;
+	Ranks startSessionRanks{};
+	Ranks ranks{};
 	
 	std::string lastMatchGuid;
 	UniqueIDWrapper	uniqueId;

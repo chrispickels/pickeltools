@@ -26,33 +26,32 @@ bool isNearlyEqual(float a, float b) {
   return min_a <= b && max_a >= b;
 }
 
+void clearPlaylists(MatchmakingWrapper& mm) {
+  constexpr Playlist playlists[] = {
+      Playlist::CASUAL_STANDARD, Playlist::CASUAL_DOUBLES,
+      Playlist::CASUAL_DUELS,    Playlist::CASUAL_CHAOS,
+      Playlist::RANKED_STANDARD, Playlist::RANKED_DOUBLES,
+      Playlist::RANKED_DUELS,    Playlist::AUTO_TOURNAMENT,
+      Playlist::EXTRAS_RUMBLE,   Playlist::EXTRAS_DROPSHOT,
+      Playlist::EXTRAS_HOOPS,    Playlist::EXTRAS_SNOWDAY};
+	for (int i = 0; i < IM_ARRAYSIZE(playlists); ++i) {
+		mm.SetPlaylistSelection(playlists[i], false);
+	}
+}
+
 }  // namespace
 
 void PickelTools::onLoad() {
 	_globalCvarManager = cvarManager;
 
 	cvarManager->registerCvar(enabledCvarName, "1", "Determines whether PickelTools is enabled.").addOnValueChanged(std::bind(&PickelTools::pluginEnabledChanged, this));
-
-	cvarManager->registerCvar(trainingCvarName, "1", "Instantly jump into training at end of match.");
-	cvarManager->registerCvar(queueCvarName, "1", "Instantly queue for previously selected playlists at end of match.");
-	cvarManager->registerCvar(exitCvarName, "0", "Instantly exit to main menu instead of training at end of match.");
-
-	cvarManager->registerCvar(tDelayCvarName, "0", "Seconds to wait before loading into training mode.");
-	cvarManager->registerCvar(eDelayCvarName, "0", "Seconds to wait before exiting to main menu.");
-	cvarManager->registerCvar(qDelayCvarName, "0", "Seconds to wait before starting queue.");
-
 	cvarManager->registerCvar(trainingMapCvarName, "EuroStadium_Night_P", "Determines the map that will launch for training.");
-
-	cvarManager->registerCvar(disableCasualQCvarName, "1", "Don't automatically queue when ending a casual game.");
-	cvarManager->registerCvar(disableCasualTCvarName, "1", "Don't automatically go to training when ending a casual game.");
-	cvarManager->registerCvar(disableCasualECvarName, "1", "Don't automatically exit when ending a casual game.");
-	cvarManager->registerCvar(disablePrivateCvarName, "1", "Disable plugin during Private, Tournament, and Heatseeker matches.");
 
 	uniqueId = gameWrapper->GetUniqueID();
 	LOG("Player's UniqueID is {}", uniqueId.GetIdString());
 
-	ranks.emplace(buildNewRanks());
-	LOG("Ranks initialized: {}", ranksToString(*ranks));
+	ranks= buildNewRanks();
+	LOG("Ranks initialized: {}", ranksToString(ranks));
 
 	mmrNotifierToken = gameWrapper->GetMMRWrapper().RegisterMMRNotifier(
 			[this](UniqueIDWrapper id) {
@@ -64,7 +63,6 @@ void PickelTools::onLoad() {
 
 void PickelTools::onUnload() {
 	mmrNotifierToken.reset();
-	ranks.reset();
 	awaitingFinalMmrUpdate = false;
 }
 
@@ -184,139 +182,22 @@ void PickelTools::pluginEnabledChanged() {
 	}
 }
 
-void PickelTools::launchTraining(ServerWrapper server, void* params, std::string eventName) {
-	float totalTrainingDelayTime = 0;
-	float trainingDelayTime = cvarManager->getCvar(tDelayCvarName).getFloatValue();
-	float autoGGDelayTime = cvarManager->getCvar("ranked_autogg_delay").getFloatValue() / 1000;
-	bool autoGG = cvarManager->getCvar("ranked_autogg").getBoolValue();
-
-	if (autoGG) {
-		totalTrainingDelayTime = trainingDelayTime + autoGGDelayTime;
-	}
-	else {
-		totalTrainingDelayTime = trainingDelayTime;
-	}
-
-	bool disableCasualTraining = cvarManager->getCvar(disableCasualTCvarName).getBoolValue();
-	bool disablePrivate = cvarManager->getCvar(disablePrivateCvarName).getBoolValue();
-
-	if (!server.IsNull() && (server.GetPlaylist().memory_address != NULL) && (disablePrivate || disableCasualTraining))
-	{
-		auto playlist = (Mode)server.GetPlaylist().GetPlaylistId();
-
-		if ((playlist == CasualChaos || playlist == CasualDoubles || playlist == CasualDuel || playlist == CasualStandard) && disableCasualTraining) {
-			return;
-		}
-		else if ((playlist == Private || playlist == Tournament || playlist == GodBall || playlist == GodBallDoubles) && disablePrivate) {
-			return;
-		}
-		else {
-			gameWrapper->SetTimeout(std::bind(&PickelTools::delayedTraining, this), totalTrainingDelayTime);
-		}
-	}
-
-	gameWrapper->SetTimeout(std::bind(&PickelTools::delayedTraining, this), totalTrainingDelayTime);
-}
-
-void PickelTools::exitGame(ServerWrapper server, void* params, std::string eventName)
-{
-	float totalExitDelayTime = 0;
-	float exitDelayTime = cvarManager->getCvar(eDelayCvarName).getFloatValue();
-	float autoGGDelayTime = cvarManager->getCvar("ranked_autogg_delay").getFloatValue() / 1000;
-	bool autoGG = cvarManager->getCvar("ranked_autogg").getBoolValue();
-
-	if (autoGG) {
-		totalExitDelayTime = exitDelayTime + autoGGDelayTime;
-	}
-	else {
-		totalExitDelayTime = exitDelayTime;
-	}
-
-	bool disableCasualExit = cvarManager->getCvar(disableCasualECvarName).getBoolValue();
-	bool disablePrivate = cvarManager->getCvar(disablePrivateCvarName).getBoolValue();
-	
-	if (!server.IsNull() && (disablePrivate || disableCasualExit)) {
-		auto playlist = (Mode)server.GetPlaylist().GetPlaylistId();
-
-		if ((playlist == CasualChaos || playlist == CasualDoubles || playlist == CasualDuel || playlist == CasualStandard) && disableCasualExit) {
-			return;
-		} else if ((playlist == Private || playlist == Tournament) && disablePrivate) {
-			return;
-		} else {
-			gameWrapper->SetTimeout(std::bind(&PickelTools::delayedExit, this), totalExitDelayTime);
-		}
-	}
-
-	gameWrapper->SetTimeout(std::bind(&PickelTools::delayedExit, this), totalExitDelayTime);
-}
-
-void PickelTools::queue(ServerWrapper server, void* params, std::string eventName) {
-	LOG("queue()");
-
-	float totalQueueDelayTime = 0;
-	float queueDelayTime = cvarManager->getCvar(qDelayCvarName).getFloatValue();
-	float autoGGDelayTime = cvarManager->getCvar("ranked_autogg_delay").getFloatValue() / 1000;
-	bool autoGG = cvarManager->getCvar("ranked_autogg").getBoolValue();
-
-	if (autoGG) {
-		totalQueueDelayTime = queueDelayTime + autoGGDelayTime;
-	} else {
-		totalQueueDelayTime = queueDelayTime;
-	}
-
-	bool disableCasualQueue = cvarManager->getCvar(disableCasualQCvarName).getBoolValue();
-	bool disablePrivate = cvarManager->getCvar(disablePrivateCvarName).getBoolValue();
-
-	if (!server.IsNull() && (disablePrivate || disableCasualQueue))	{
-		auto playlist = (Mode)server.GetPlaylist().GetPlaylistId();
-
-		if ((playlist == CasualChaos || playlist == CasualDoubles || playlist == CasualDuel || playlist == CasualStandard) && disableCasualQueue) {
-			return;
-		} else if ((playlist == Private || playlist == Tournament) && disablePrivate) {
-			return;
-		} else {
-			gameWrapper->SetTimeout(std::bind(&PickelTools::delayedQueue, this), totalQueueDelayTime);
-		}
-	}
-
-	gameWrapper->SetTimeout(std::bind(&PickelTools::delayedQueue, this), totalQueueDelayTime);
-}
-
-void PickelTools::delayedQueue() {
-	auto game = gameWrapper->GetOnlineGame();
-	if (!game.IsNull()) {
-		if (game.GetbHasLeaveMatchPenalty()) return;
-	}
-
+void PickelTools::queue() {
 	cvarManager->executeCommand("queue");
 }
 
-void PickelTools::delayedTraining() {
-	std::stringstream launchTrainingCommandBuilder;
+void PickelTools::startTraining() {
+	std::stringstream s;
 	std::string mapname = cvarManager->getCvar(trainingMapCvarName).getStringValue();
+	s << "start " << mapname << "?Game=TAGame.GameInfo_Tutorial_TA?GameTags=Freeplay";
 
-	if (mapname.compare("random") == 0) {
-		mapname = gameWrapper->GetRandomMap();
-	}
-
-	launchTrainingCommandBuilder << "start " << mapname << "?Game=TAGame.GameInfo_Tutorial_TA?GameTags=Freeplay";
-	const std::string launchTrainingCommand = launchTrainingCommandBuilder.str();
 	auto game = gameWrapper->GetOnlineGame();
 	if (!game.IsNull()) {
 		if (game.GetbHasLeaveMatchPenalty()) return;
 	}
 
-	gameWrapper->ExecuteUnrealCommand(launchTrainingCommand);
-}
-
-void PickelTools::delayedExit() {
-	auto game = gameWrapper->GetOnlineGame();
-
-	if (!game.IsNull()) {
-		if (game.GetbHasLeaveMatchPenalty()) return;
-	}
-
-	cvarManager->executeCommand("unreal_command disconnect");
+	LOG("startTraining command='{}'", s.str());
+	gameWrapper->ExecuteUnrealCommand(s.str());
 }
 
 void PickelTools::onMatchEnd(ServerWrapper server, void* params, std::string eventName) {
@@ -341,19 +222,16 @@ void PickelTools::onMatchEnd(ServerWrapper server, void* params, std::string eve
 		return;
 	}
 
-	const bool exitEnabled = cvarManager->getCvar(exitCvarName).getBoolValue();
-	const bool queueEnabled = cvarManager->getCvar(queueCvarName).getBoolValue();
-	const bool trainingEnabled = cvarManager->getCvar(trainingCvarName).getBoolValue();
-	if (exitEnabled) {
-		exitGame(server, params, eventName);
-	}	else {
-		if (trainingEnabled) {
-			launchTraining(server, params, eventName);
+	if (!server.IsNull() && !server.GetPlaylist().IsNull()) {
+		auto playlist = static_cast<Mode>(server.GetPlaylist().GetPlaylistId());
+		if (playlist != RankedDuel && playlist != RankedDoubles && playlist != RankedStandard) {
+			LOG("Unsupported playlist={}", modeToString(playlist));
+			return;
 		}
 	}
-	if (queueEnabled) {
-		queue(server, params, eventName);
-	}
+
+	startTraining();
+	queue();
 }
 
 void PickelTools::onPenaltyChanged(ServerWrapper server, void* params, std::string eventName) {
@@ -400,19 +278,6 @@ void PickelTools::onPenaltyChanged(ServerWrapper server, void* params, std::stri
 	onMatchEnd(server, params, eventName);
 }
 
-void PickelTools::clearPlaylists(MatchmakingWrapper& mm) {
-  constexpr Playlist playlists[] = {
-      Playlist::CASUAL_STANDARD, Playlist::CASUAL_DOUBLES,
-      Playlist::CASUAL_DUELS,    Playlist::CASUAL_CHAOS,
-      Playlist::RANKED_STANDARD, Playlist::RANKED_DOUBLES,
-      Playlist::RANKED_DUELS,    Playlist::AUTO_TOURNAMENT,
-      Playlist::EXTRAS_RUMBLE,   Playlist::EXTRAS_DROPSHOT,
-      Playlist::EXTRAS_HOOPS,    Playlist::EXTRAS_SNOWDAY};
-	for (int i = 0; i < IM_ARRAYSIZE(playlists); ++i) {
-		mm.SetPlaylistSelection(playlists[i], false);
-	}
-}
-
 void PickelTools::startSession() {
 	LOG("Start session, gamesRemaining={}", gamesRemaining);
 
@@ -425,13 +290,8 @@ void PickelTools::startSession() {
 		return;
 	}
 
-	if (ranks.has_value()) {
-		LOG("Start session with ranks {}", ranksToString(*ranks));
-		startSessionRanks = *ranks;
-	} else {
-		LOG("Start session with unknown ranks");
-		startSessionRanks = {};
-	}
+	LOG("Start session with ranks {}", ranksToString(ranks));
+	startSessionRanks = ranks;
 
 	clearPlaylists(mm);
 	switch (gameMode) {
@@ -455,7 +315,7 @@ void PickelTools::startSession() {
 	if (!gameWrapper->IsInFreeplay() &&
 			!gameWrapper->IsInReplay() &&
 			!gameWrapper->IsInCustomTraining()) {
-		delayedTraining();
+		startTraining();
 	}
 
 	cvarManager->executeCommand("closemenu settings");
@@ -490,12 +350,13 @@ void PickelTools::onMmrUpdate(UniqueIDWrapper id) {
 	}
 
 	Ranks newRanks = buildNewRanks();
-	if (!ranks.has_value()) {
-		LOG("Ranks initialized: {}", ranksToString(newRanks));
-		ranks.emplace(newRanks);
-		return;
+	if (ranks.rankedDuel != newRanks.rankedDuel ||
+		ranks.rankedDoubles != newRanks.rankedDoubles ||
+		ranks.rankedStandard != newRanks.rankedStandard) {
+		LOG("Rank changed:\nOld ranks: {}\nNew ranks: {}", ranksToString(ranks), ranksToString(newRanks));
+		ranks = newRanks;
 	}
-	
+
 	if (awaitingFinalMmrUpdate) {
 		LOG("Got final MMR update for session");
 		awaitingFinalMmrUpdate = false;
@@ -517,17 +378,9 @@ void PickelTools::onMmrUpdate(UniqueIDWrapper id) {
 		if (!isNearlyEqual(diff.rankedStandard, 0.f)) {
 			s << std::format("\n3v3 {:+.1f}\n", diff.rankedStandard);
 		}
+		startTraining();
 		gameWrapper->Toast("Session Complete", s.str(), "", 10.0, ToastType_OK);
 	}
-
-	if (ranks->rankedDuel == newRanks.rankedDuel &&
-		ranks->rankedDoubles == newRanks.rankedDoubles &&
-		ranks->rankedStandard == newRanks.rankedStandard) {
-		return;
-	}
-
-	LOG("Rank changed:\nOld ranks: {}\nNew ranks: {}", ranksToString(*ranks), ranksToString(newRanks));
-	ranks.emplace(newRanks);
 }
 
 void PickelTools::hookMatchEnded() {
