@@ -182,8 +182,52 @@ void PickelTools::pluginEnabledChanged() {
 	}
 }
 
-void PickelTools::queue() {
-	cvarManager->executeCommand("queue");
+void PickelTools::queue(int retries) {
+	LOG("queue() retries={} ...", retries);
+	if (retries == 0) {
+		LOG("Exhausted retries, giving up");
+		return;
+	}
+
+	auto retry = [=] {
+		constexpr float kQueueRetryWait = 0.1f;
+		gameWrapper->SetTimeout([this, retries](GameWrapper* gw) {
+			queue(retries - 1);
+		}, kQueueRetryWait);
+	};
+
+	MatchmakingWrapper mm = gameWrapper->GetMatchmakingWrapper();
+	if (mm.IsNull()) {
+		LOG("MatchmakingWrapper is null");
+		retry();
+		return;
+	}
+
+	
+	clearPlaylists(mm);
+	switch (gameMode) {
+	case RankedDuel:
+		mm.SetPlaylistSelection(Playlist::RANKED_DUELS, true);
+		break;
+	case RankedDoubles:
+		mm.SetPlaylistSelection(Playlist::RANKED_DOUBLES, true);
+		break;
+	case RankedStandard:
+		mm.SetPlaylistSelection(Playlist::RANKED_STANDARD, true);
+		break;
+	default:
+		LOG("Unknown game mode {}", gameMode);
+		return;
+	}
+	mm.StartMatchmaking(PlaylistCategory::RANKED);
+
+	if (!mm.IsSearching()) {
+		LOG("Still not searching, try again...");
+		retry();
+		return;
+	}
+
+	LOG("Queued successfully!");
 }
 
 void PickelTools::startTraining() {
@@ -231,20 +275,7 @@ void PickelTools::onMatchEnd(ServerWrapper server, void* params, std::string eve
 	}
 
 	startTraining();
-	if (server.GetbMatchEnded()) {
-		queue();
-		return;
-	}
-
-	// Sanity check.
-	if (server.GetbHasLeaveMatchPenalty()) {
-		LOG("bHasLeaveMatchPenalty still true, failed to queue");
-		return;
-	}
-
-	// Queueing now might not work. Let's wait until we have actually left the game.
-	LOG("Waiting for onSessionEnd before queueing...");
-	queueAfterEndSession = true;
+	queue();
 }
 
 void PickelTools::onPenaltyChanged(ServerWrapper server, void* params, std::string eventName) {
@@ -291,19 +322,12 @@ void PickelTools::onPenaltyChanged(ServerWrapper server, void* params, std::stri
 	onMatchEnd(server, params, eventName);
 }
 
-void PickelTools::onSessionEnded(ServerWrapper server, void* params, std::string eventName) {
-	LOG("onSessionEnded event={}", eventName);
-	if (queueAfterEndSession) {
-		LOG("queueing after onSessionEnded");
-		queueAfterEndSession = false;
-		queue();
-	}
-}
-
 void PickelTools::startSession() {
 	LOG("Start session, gamesRemaining={}", gamesRemaining);
 
+	awaitingFinalMmrUpdate = false;
 	gamesPlayed = 0;
+
 	if (gamesRemaining == 0) return;
 
 	MatchmakingWrapper mm = gameWrapper->GetMatchmakingWrapper();
@@ -315,25 +339,7 @@ void PickelTools::startSession() {
 	LOG("Start session with ranks {}", ranksToString(ranks));
 	startSessionRanks = ranks;
 
-	clearPlaylists(mm);
-	switch (gameMode) {
-	case RankedDuel:
-		mm.SetPlaylistSelection(Playlist::RANKED_DUELS, true);
-		break;
-	case RankedDoubles:
-		mm.SetPlaylistSelection(Playlist::RANKED_DOUBLES, true);
-		break;
-	case RankedStandard:
-		mm.SetPlaylistSelection(Playlist::RANKED_STANDARD, true);
-		break;
-	default:
-		LOG("Unknown game mode {}", gameMode);
-		gamesRemaining = 0;
-		return;
-	}
-	LOG("Start matchmaking...");
-	mm.StartMatchmaking(PlaylistCategory::RANKED);
-
+	queue();
 	if (!gameWrapper->IsInFreeplay() &&
 			!gameWrapper->IsInReplay() &&
 			!gameWrapper->IsInCustomTraining()) {
@@ -408,12 +414,10 @@ void PickelTools::onMmrUpdate(UniqueIDWrapper id) {
 void PickelTools::hookMatchEnded() {
 	gameWrapper->HookEventWithCaller<ServerWrapper>(matchEndedEvent, std::bind(&PickelTools::onMatchEnd, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 	gameWrapper->HookEventWithCallerPost<ServerWrapper>(penaltyChangedEvent, std::bind(&PickelTools::onPenaltyChanged, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
-	gameWrapper->HookEventWithCaller<ServerWrapper>(sessionEndedEvent, std::bind(&PickelTools::onSessionEnded, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 	hooked = true;
 }
 
 void PickelTools::unhookMatchEnded() {
-	gameWrapper->UnhookEvent(sessionEndedEvent);
 	gameWrapper->UnhookEventPost(penaltyChangedEvent);
 	gameWrapper->UnhookEvent(matchEndedEvent);
 	hooked = false;
