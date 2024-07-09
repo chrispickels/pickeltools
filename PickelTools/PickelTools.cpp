@@ -102,7 +102,8 @@ void PickelTools::RenderSettings() {
 		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, (ImVec4)ImColor::HSV(0 / 7.0f, 0.7f, 0.7f));
 		ImGui::PushStyleColor(ImGuiCol_ButtonActive, (ImVec4)ImColor::HSV(0 / 7.0f, 0.8f, 0.8f));
 
-		if (ImGui::Button("End")) {
+		std::string endLabel = std::format("End ({} games left)", gamesRemaining);
+		if (ImGui::Button(endLabel.c_str())) {
 			gameWrapper->Execute([this](GameWrapper* gw) {
 				endSession();
 			});
